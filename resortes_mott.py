@@ -455,6 +455,24 @@ def disenar(material, F1, L1, F2, L2, extremos="escuadrados_rectificados",
         candidatos = sorted(d for _, d in tabla)
     Dw_t = None
     resultados = []
+
+    def _seleccionar_N(Na_t, Dw, Dm):
+        """Mejor N entero: k_i ≈ k con Ls < Lo y holgura suficiente."""
+        mejor = None
+        for Nn in range(math.ceil(Na_t) + 1, math.ceil(Na_t) + 4):
+            Na_i = espiras_activas(Nn, extremos)
+            k_i = G * Dw ** 4 / (8 * Dm ** 3 * Na_i)
+            Ls_i = Ls_de(Dw, Nn, extremos)
+            if Ls_i >= Lo:
+                continue
+            cc_i = (Lo - Ls_i) / Na_i
+            if cc_i <= Dw / 10:
+                continue
+            err = abs(k_i - k) / k
+            if mejor is None or err < mejor[0]:
+                mejor = (err, Nn, Na_i, k_i, Ls_i, cc_i)
+        return mejor
+
     for Dw in candidatos:
         tau_d_psi = tau_adm(material, mm_a_pulg(Dw) if si else Dw, servicio)
         tau_d = psi_a_MPa(tau_d_psi) if si else tau_d_psi
@@ -486,21 +504,18 @@ def disenar(material, F1, L1, F2, L2, extremos="escuadrados_rectificados",
                     Dw_t = Dw_tentativo(Fo, Dm, tau_d)
                 continue
             Na = G * Dw ** 4 / (8 * k * Dm ** 3)     # (19-8) equivalente
-            N = Na + 2
-            Ls = Ls_de(Dw, N, extremos)
-            if Ls >= Lo:
+            sel = _seleccionar_N(Na, Dw, Dm)
+            if sel is None:
                 continue
-            cc = (Lo - Ls) / Na
-            if cc <= Dw / 10:
-                continue
+            err, N, Na_i, k_i, Ls_i, cc_i = sel
             if Dw_t is None:
                 Dw_t = Dw_tentativo(Fo, Dm, tau_d)
-            # esfuerzo a sólido (τs) y chequeo τs ≤ τmáx (fig. 19-8..19-13)
-            Fs_c = k * (Lf - Ls)
-            tau_s_c = esfuerzo(Fs_c, Dm, Dw, K)
+            # τs con los valores finales (N entero) y chequeo τs ≤ τmáx
+            tau_s_c = esfuerzo(k_i * (Lf - Ls_i), Dm, Dw, K)
             solid_ok = tau_s_c <= tau_d * TAU_LIG.get(material, 1.12)
             resultados.append(dict(Dw=Dw, Dm=Dm, C=C, K=K, tau=tau,
-                                   tau_d=tau_d, Na=Na, N=N, Ls=Ls, cc=cc,
+                                   tau_d=tau_d, Na=Na, N=N, Na_i=Na_i,
+                                   Ls=Ls_i, cc=cc_i, k_real=k_i, err_k=err,
                                    tau_s=tau_s_c, solid_ok=solid_ok))
             break                                   # mejor Dm para este Dw
     if not resultados:
@@ -510,33 +525,14 @@ def disenar(material, F1, L1, F2, L2, extremos="escuadrados_rectificados",
     # si ninguno, usar el primero factible (el informe avisará)
     con_solid = [t for t in resultados if t["solid_ok"]]
     elegido = con_solid[0] if con_solid else resultados[0]
-    # N entero que mejor aproxima k, verificando Ls < Lo y holgura
     Dw, Dm = elegido["Dw"], elegido["Dm"]
-    Na_t = elegido["Na"]
-    mejor = None
-    for N in range(math.ceil(Na_t) + 1, math.ceil(Na_t) + 4):
-        Na_i = espiras_activas(N, extremos)
-        k_i = G * Dw ** 4 / (8 * Dm ** 3 * Na_i)
-        Ls_i = Ls_de(Dw, N, extremos)
-        if Ls_i >= Lo:
-            continue
-        cc_i = (Lo - Ls_i) / Na_i
-        if cc_i <= Dw / 10:
-            continue
-        err = abs(k_i - k) / k
-        if mejor is None or err < mejor[0]:
-            mejor = (err, N, Na_i, k_i, Ls_i, cc_i)
-    if mejor is None:
-        # respaldo: usar Na fraccional (extremos rectificados a medida,
-        # como en el libro, pág. 751)
-        N_f = Na_t + 2
-        mejor = (0.0, N_f, Na_t, k, elegido["Ls"], elegido["cc"])
-    err, N, Na_i, k_i, Ls_i, cc_i = mejor
-    C, K = Dm / Dw, wahl(Dm / Dw)
-    tau_o = esfuerzo(Fo, Dm, Dw, K)
+    C, K = elegido["C"], elegido["K"]
+    Na_t, N, Na_i = elegido["Na"], elegido["N"], elegido["Na_i"]
+    k_i, Ls_i, cc_i, err = (elegido["k_real"], elegido["Ls"],
+                            elegido["cc"], elegido["err_k"])
+    tau_o, tau_s = elegido["tau"], elegido["tau_s"]
     DE, DI = Dm + Dw, Dm - Dw
     Fs = k_i * (Lf - Ls_i)
-    tau_s = esfuerzo(Fs, Dm, Dw, K)
     # valores con Na fraccional (19-8), como los problemas del libro
     Ls_t = Ls_de(Dw, Na_t + 2, extremos)
     Fs_t = k * (Lf - Ls_t)
